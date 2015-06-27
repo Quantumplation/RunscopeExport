@@ -3,11 +3,12 @@
 
 module Main where
 
-import           BasePrelude                (IO, Int, String, appendFile, fmap,
-                                             foldM, head, length, map, mapM,
-                                             otherwise, putStrLn, return, show,
-                                             take, undefined, writeFile, ($),
-                                             (+), (++), (.), (=<<))
+import           BasePrelude                (IO, Int, String, appendFile,
+                                             filter, fmap, foldM, foldM_, head,
+                                             length, map, mapM, otherwise,
+                                             putStrLn, return, show, take,
+                                             undefined, writeFile, ($), (+),
+                                             (++), (.), (=<<))
 import           Control.Lens
 import           Data.Aeson
 import           Data.Aeson.Lens            (key, values, _String, _Value)
@@ -39,13 +40,13 @@ captureUrl bucketKey = concat [rootUrl, bucketKey, "/captures"]
 messageUrl :: ByteString -> ByteString -> ByteString
 messageUrl bucketKey uuid = concat [rootUrl, bucketKey, "/messages/", uuid]
 
-withToken :: Options -> ByteString -> Options
-withToken o t = o & header "Authorization" .~ ["Bearer " ++ t]
+withToken :: ByteString -> Options -> Options
+withToken t o = o & header "Authorization" .~ [concat ["Bearer ", t]]
 
 getAuth :: Options -> ByteString -> IO (Response BL.ByteString)
 getAuth opts url = do
     token <- authToken
-    getWith (withToken opts token) (unpack url)
+    getWith (withToken token opts) (unpack url)
 
 dataLens = responseBody . key "data" . _Value
 bodyLens = dataLens . key "request" . key "body" . _Value
@@ -69,23 +70,24 @@ handleResponse counts v = do
                                     otherwise -> "") :: Maybe Value)
     let reqType = encodeUtf8 $ fromMaybe "request" $ v' ^? key "eventType" . _String
     let count = modify $ lookup reqType counts
-    let file = folder ++ unpack reqType ++ show $ fromJust count ++ ".json"
+    let file = folder ++ unpack reqType ++ show count ++ ".json"
     putStrLn $ "Writing " ++ file
     writeFile file $ (BL.unpack . encode) v'
-    let newCounts = alter modify reqType counts
+    let newCounts = alter (Just . modify) reqType counts
     return newCounts
     where
-        modify a = Just $ fromMaybe 0 a + 1
+        modify a = fromMaybe 0 a + 1
 
 handleUUID :: Map ByteString Int -> ByteString -> IO (Map ByteString Int)
 handleUUID counts uuid = do
     deets <- getDetails uuid
     handleResponse counts deets
 
-force :: Result a -> a
-force (Error x) = undefined
-force (Success x) = x
-
+parseUUID encoded =
+    let json = fromJSON encoded
+    in case json of
+        Error err -> Nothing
+        Success a -> Just $ pack a
 
 main = do
     putStrLn "Start..."
@@ -94,7 +96,7 @@ main = do
     response <- getAuth opts url
     let body = coerceResponse response dataLens
     let uuids = body ^.. values . key "uuid"
-    let extracted = map (pack . force . fromJSON) uuids
+    let extracted = mapMaybe (parseUUID) uuids
     putStrLn $ "Processing " ++ show (length extracted) ++ " uuids."
     foldM_ handleUUID empty extracted
     putStrLn "Done"
