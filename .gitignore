@@ -14,3 +14,7 @@ cabal.sandbox.config
 *.prof
 *.aux
 *.hp
+
+#project specitic
+*.secret
+requests/*
