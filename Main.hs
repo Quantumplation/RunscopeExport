@@ -40,7 +40,7 @@ messageUrl :: ByteString -> ByteString -> ByteString
 messageUrl bucketKey uuid = concat [rootUrl, bucketKey, "/messages/", uuid]
 
 withToken :: Options -> ByteString -> Options
-withToken o t = o & header "Authorization" .~ [concat ["Bearer ", t]]
+withToken o t = o & header "Authorization" .~ ["Bearer " ++ t]
 
 getAuth :: Options -> ByteString -> IO (Response BL.ByteString)
 getAuth opts url = do
@@ -64,24 +64,23 @@ folder = "requests/"
 
 handleResponse :: Map ByteString Int -> Value -> IO (Map ByteString Int)
 handleResponse counts v = do
-    let v' = fromMaybe emptyObject $ ((decode $ BL.fromStrict $ encodeUtf8 $ case v of
+    let v' = fromMaybe emptyObject ((decode $ BL.fromStrict $ encodeUtf8 $ case v of
                                     String s -> s
                                     otherwise -> "") :: Maybe Value)
     let reqType = encodeUtf8 $ fromMaybe "request" $ v' ^? key "eventType" . _String
     let count = modify $ lookup reqType counts
-    let file = folder ++ (unpack reqType) ++ (show $ fromJust count) ++ ".json"
+    let file = folder ++ unpack reqType ++ show $ fromJust count ++ ".json"
     putStrLn $ "Writing " ++ file
     writeFile file $ (BL.unpack . encode) v'
     let newCounts = alter modify reqType counts
     return newCounts
     where
-        modify a = Just $ (fromMaybe 0 a) + 1
+        modify a = Just $ fromMaybe 0 a + 1
 
 handleUUID :: Map ByteString Int -> ByteString -> IO (Map ByteString Int)
 handleUUID counts uuid = do
     deets <- getDetails uuid
-    newCounts <- handleResponse counts deets
-    return newCounts
+    handleResponse counts deets
 
 force :: Result a -> a
 force (Error x) = undefined
@@ -96,6 +95,6 @@ main = do
     let body = coerceResponse response dataLens
     let uuids = body ^.. values . key "uuid"
     let extracted = map (pack . force . fromJSON) uuids
-    putStrLn $ "Processing " ++ (show $ length extracted) ++ " uuids."
-    foldM handleUUID empty extracted
+    putStrLn $ "Processing " ++ show (length extracted) ++ " uuids."
+    foldM_ handleUUID empty extracted
     putStrLn "Done"
