@@ -85,8 +85,8 @@ getRequestBody bucket uuid = do
     let url = messageUrl bucket uuid
     response <- getAuth defaults url
     let bodyAsString = getBody response
-    let attemptedDecode = (decode . BL.fromStrict . encodeUtf8) details :: Maybe Value
-    return fromMaybe emptyObject maybeDecoded
+    let attemptedDecode = (decode . BL.fromStrict . encodeUtf8) bodyAsString :: Maybe Value
+    return $ fromMaybe emptyObject attemptedDecode
 
 -- Handling API responses
 handleResponse :: Map ByteString Int -> Value -> IO (Map ByteString Int)
