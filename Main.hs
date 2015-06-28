@@ -41,6 +41,7 @@ folder = "requests/"
 
 maxRequests :: Int
 maxRequests = 1000
+
 -- Uri builders
 captureUrl :: ByteString -> ByteString
 captureUrl bucket = concat [rootUrl, bucket, "/captures"]
@@ -60,18 +61,34 @@ getAuth opts url = do
     token <- authToken
     getWith (withToken token opts) (unpack url)
 
--- Lenses
-
+-- Lenses and data conversion
 getData r = fromMaybe emptyArray $ r ^? responseBody . key "data" . _Value
 getBody r = fromMaybe "" $ getData r ^? key "request" . key "body" . _String
 getEventType v = fromMaybe "request" $ v ^? key "eventType" . _String
 
-getDetails :: ByteString -> ByteString -> IO T.Text
-getDetails bucket uuid = do
+parseUUID encoded = case fromJSON encoded of
+    Error err -> Nothing
+    Success a -> Just $ pack a
+
+-- Web-requests and parsing
+getUUIDs :: ByteString -> IO Value
+getUUIDs bucket = do
+    let opts = defaults & param "count" .~ [(T.pack . show) maxRequests]
+    let url = captureUrl bucket
+    response <- getAuth opts url
+    let responseData = getData response
+    let uuids = responseData ^.. values . key "uuid"
+    return $ mapMaybe parseUUID uuids
+
+getRequestBody :: ByteString -> ByteString -> IO Value
+getRequestBody bucket uuid = do
     let url = messageUrl bucket uuid
     response <- getAuth defaults url
-    return $ getBody response
+    let bodyAsString = getBody response
+    let attemptedDecode = (decode . BL.fromStrict . encodeUtf8) details :: Maybe Value
+    return fromMaybe emptyObject maybeDecoded
 
+-- Handling API responses
 handleResponse :: Map ByteString Int -> Value -> IO (Map ByteString Int)
 handleResponse counts v = do
     let eventType = encodeUtf8 $ getEventType v
@@ -86,31 +103,20 @@ handleResponse counts v = do
 
 handleUUID :: ByteString -> Map ByteString Int -> ByteString -> IO (Map ByteString Int)
 handleUUID bucket counts uuid = do
-    details <- getDetails bucket uuid
-    let maybeDecoded = (decode . BL.fromStrict . encodeUtf8) details :: Maybe Value
-    let decoded = fromMaybe emptyObject maybeDecoded
-    handleResponse counts decoded
+    details <- getRequestBody bucket uuid
+    handleResponse counts details
 
-parseUUID encoded =
-    let json = fromJSON encoded
-    in case json of
-        Error err -> Nothing
-        Success a -> Just $ pack a
 
-handleBucket :: Options -> ByteString -> IO ()
-handleBucket opts bucket = do
-    let url = captureUrl bucket
-    response <- getAuth opts url
-    let responseData = getData response
-    let uuids = responseData ^.. values . key "uuid"
-    let extracted = mapMaybe parseUUID uuids
-    putStrLn $ "Processing " ++ show (length extracted) ++ " uuids."
-    foldM_ (handleUUID bucket) empty extracted
+handleBucket :: ByteString -> IO ()
+handleBucket bucket = do
+    uuids <- getUUIDs bucket
+    putStrLn $ "Processing " ++ show (length uuids) ++ " uuids."
+    foldM_ (handleUUID bucket) empty uuids
 
+-- Entrypoint
 main :: IO ()
 main = do
     putStrLn "Start..."
     buckets <- bucketKeys
-    let opts = defaults & param "count" .~ [(T.pack . show) maxRequests]
-    mapM_ (handleBucket opts) buckets
+    mapM_ handleBucket buckets
     putStrLn "Done"
