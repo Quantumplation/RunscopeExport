@@ -18,6 +18,7 @@ import           Data.ByteString.Char8      (ByteString, concat, lines, pack,
 import qualified Data.ByteString.Lazy.Char8 as BL
 import           Data.Map                   (Map, alter, empty, lookup)
 import           Data.Maybe
+import qualified Data.Text                  as T
 import           Data.Text.Encoding         (encodeUtf8)
 import           Debug.Trace
 import           Network.Wreq
@@ -48,26 +49,22 @@ getAuth opts url = do
     token <- authToken
     getWith (withToken token opts) (unpack url)
 
-dataLens = responseBody . key "data" . _Value
-bodyLens = dataLens . key "request" . key "body" . _Value
+getData r = fromMaybe emptyArray $ r ^? responseBody . key "data" . _Value
+getBody r = fromMaybe "" $ getData r ^? key "request" . key "body" . _String
 
-coerceResponse response lens = fromMaybe emptyArray $ response ^? lens
-
-getDetails :: ByteString -> IO Value
+getDetails :: ByteString -> IO T.Text
 getDetails uuid = do
     bKey <- bucketKey
     let url = messageUrl bKey uuid
     response <- getAuth defaults url
-    return $ coerceResponse response bodyLens
+    return $ getBody response
 
 folder :: String
 folder = "requests/"
 
-handleResponse :: Map ByteString Int -> Value -> IO (Map ByteString Int)
+handleResponse :: Map ByteString Int -> T.Text -> IO (Map ByteString Int)
 handleResponse counts v = do
-    let v' = fromMaybe emptyObject ((decode $ BL.fromStrict $ encodeUtf8 $ case v of
-                                    String s -> s
-                                    otherwise -> "") :: Maybe Value)
+    let v' = fromMaybe emptyObject ((decode $ BL.fromStrict $ encodeUtf8 v) :: Maybe Value)
     let reqType = encodeUtf8 $ fromMaybe "request" $ v' ^? key "eventType" . _String
     let count = modify $ lookup reqType counts
     let file = folder ++ unpack reqType ++ show count ++ ".json"
@@ -94,9 +91,9 @@ main = do
     url <- fmap captureUrl bucketKey
     let opts = defaults & param "count" .~ ["1000"]
     response <- getAuth opts url
-    let body = coerceResponse response dataLens
+    let body = getData response
     let uuids = body ^.. values . key "uuid"
-    let extracted = mapMaybe (parseUUID) uuids
+    let extracted = mapMaybe parseUUID uuids
     putStrLn $ "Processing " ++ show (length extracted) ++ " uuids."
     foldM_ handleUUID empty extracted
     putStrLn "Done"
