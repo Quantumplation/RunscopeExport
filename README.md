@@ -9,5 +9,6 @@ This is still very much a work in progress:
  - Tied to TFS json request format for filenames (I plan on taking an argument for which json field to use for the Map key)
  - Not parallel, 
  - doesn't use wreq sessions to pool TCP connections
- - 
+
+
 Create two files, "auth_token.secret" and "bucket_key.secret" with your runscope API key and bucket respectively.
