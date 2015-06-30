@@ -7,8 +7,8 @@ import           BasePrelude                (IO, Int, String, appendFile,
                                              filter, fmap, foldM, foldM_, head,
                                              length, map, mapM, mapM_,
                                              otherwise, putStrLn, return, show,
-                                             take, undefined, ($),
-                                             (+), (++), (.), (=<<))
+                                             take, undefined, ($), (+), (++),
+                                             (.), (=<<))
 import           Control.Lens
 import           Data.Aeson
 import           Data.Aeson.Lens            (key, values, _String, _Value)
@@ -23,6 +23,7 @@ import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
 import           Debug.Trace
 import           Network.Wreq
+import qualified Network.Wreq.Session       as S
 
 -- Secrets
 authToken :: IO ByteString
@@ -55,10 +56,10 @@ filename eventType count = folder ++ unpack eventType ++ show count ++ ".json"
 withToken :: ByteString -> Options -> Options
 withToken t o = o & header "Authorization" .~ [concat ["Bearer ", t]]
 
-getAuth :: Options -> ByteString -> IO (Response BL.ByteString)
-getAuth opts url = do
+getAuth :: Options -> S.Session -> ByteString -> IO (Response BL.ByteString)
+getAuth opts sess url = do
     token <- authToken
-    getWith (withToken token opts) (unpack url)
+    S.getWith (withToken token opts) sess (unpack url)
 
 -- Lenses and data conversion
 getData r = fromMaybe emptyArray $ r ^? responseBody . key "data" . _Value
@@ -70,17 +71,17 @@ parseUUID encoded = case fromJSON encoded of
     Success a -> Just $ pack a
 
 -- Web-requests and parsing
-getUUIDs :: ByteString -> IO [ByteString]
-getUUIDs bucket = do
+getUUIDs :: S.Session -> ByteString -> IO [ByteString]
+getUUIDs sess bucket = do
     let opts = defaults & param "count" .~ [(T.pack . show) maxRequests]
     let url = captureUrl bucket
-    response <- getAuth opts url
+    response <- getAuth opts sess url
     let responseData = getData response
     let uuids = responseData ^.. values . key "uuid"
     return $ mapMaybe parseUUID uuids
 
-getRequestBody :: ByteString -> ByteString -> IO Value
-getRequestBody bucket uuid = ourDecode <$> getAuth defaults url
+getRequestBody :: S.Session -> ByteString -> ByteString -> IO Value
+getRequestBody sess bucket uuid = ourDecode <$> getAuth defaults sess url
     where
         url = messageUrl bucket uuid
         ourDecode = fromMaybe emptyObject . decode . BL.fromStrict . encodeUtf8 . getBody
@@ -97,18 +98,18 @@ handleResponse counts v = newCounts <$ do
         newCounts = alter (Just . modify) eventType counts
         modify = maybe 1 (+1)
 
-handleUUID :: ByteString -> Map ByteString Int -> ByteString -> IO (Map ByteString Int)
-handleUUID bucket counts uuid = handleResponse counts =<< getRequestBody bucket uuid
+handleUUID :: S.Session -> ByteString -> Map ByteString Int -> ByteString -> IO (Map ByteString Int)
+handleUUID sess bucket counts uuid = handleResponse counts =<< getRequestBody sess bucket uuid
 
-handleBucket :: ByteString -> IO ()
-handleBucket bucket = do
-    uuids <- getUUIDs bucket
+handleBucket :: S.Session -> ByteString -> IO ()
+handleBucket sess bucket = do
+    uuids <- getUUIDs sess bucket
     putStrLn $ "Processing " ++ show (length uuids) ++ " uuids."
-    foldM_ (handleUUID bucket) empty uuids
+    foldM_ (handleUUID sess bucket) empty uuids
 
 -- Entrypoint
 main :: IO ()
-main = do
+main = S.withAPISession $ \sess -> do
     putStrLn "Start..."
-    mapM_ handleBucket =<< bucketKeys
+    mapM_ (handleBucket sess) =<< bucketKeys
     putStrLn "Done"
