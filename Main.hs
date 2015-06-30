@@ -7,7 +7,7 @@ import           BasePrelude                (IO, Int, String, appendFile,
                                              filter, fmap, foldM, foldM_, head,
                                              length, map, mapM, mapM_,
                                              otherwise, putStrLn, return, show,
-                                             take, undefined, writeFile, ($),
+                                             take, undefined, ($),
                                              (+), (++), (.), (=<<))
 import           Control.Lens
 import           Data.Aeson
@@ -20,7 +20,7 @@ import           Data.Functor               ((<$), (<$>))
 import           Data.Map                   (Map, alter, empty, lookup)
 import           Data.Maybe
 import qualified Data.Text                  as T
-import           Data.Text.Encoding         (encodeUtf8)
+import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
 import           Debug.Trace
 import           Network.Wreq
 
@@ -89,7 +89,7 @@ getRequestBody bucket uuid = ourDecode <$> getAuth defaults url
 handleResponse :: Map ByteString Int -> Value -> IO (Map ByteString Int)
 handleResponse counts v = newCounts <$ do
     putStrLn $ "Writing " ++ file
-    writeFile file $ (BL.unpack . encode) v
+    BL.writeFile file $ encode v
     where
         eventType = encodeUtf8 $ getEventType v
         count = modify $ lookup eventType counts
