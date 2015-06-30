@@ -26,7 +26,7 @@ import           Network.Wreq
 
 -- Secrets
 authToken :: IO ByteString
-authToken = readFile "auth_token.secret"
+authToken = head . lines <$> readFile "auth_token.secret"
 
 bucketKeys :: IO [ByteString]
 bucketKeys = lines <$> readFile "bucket_key.secret"
