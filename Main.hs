@@ -1,7 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Main where
+module Main(main) where
 
 import           BasePrelude                (IO, Int, String, appendFile,
                                              filter, fmap, foldM, foldM_, head,
@@ -16,6 +16,7 @@ import           Data.Aeson.Types           hiding (Options)
 import           Data.ByteString.Char8      (ByteString, concat, lines, pack,
                                              readFile, unpack)
 import qualified Data.ByteString.Lazy.Char8 as BL
+import           Data.Functor               ((<$), (<$>))
 import           Data.Map                   (Map, alter, empty, lookup)
 import           Data.Maybe
 import qualified Data.Text                  as T
@@ -28,9 +29,7 @@ authToken :: IO ByteString
 authToken = readFile "auth_token.secret"
 
 bucketKeys :: IO [ByteString]
-bucketKeys = do
-    contents <- readFile "bucket_key.secret"
-    return $ lines contents
+bucketKeys = lines <$> readFile "bucket_key.secret"
 
 -- Constants
 rootUrl :: ByteString
@@ -71,7 +70,7 @@ parseUUID encoded = case fromJSON encoded of
     Success a -> Just $ pack a
 
 -- Web-requests and parsing
-getUUIDs :: ByteString -> IO Value
+getUUIDs :: ByteString -> IO [ByteString]
 getUUIDs bucket = do
     let opts = defaults & param "count" .~ [(T.pack . show) maxRequests]
     let url = captureUrl bucket
@@ -81,31 +80,25 @@ getUUIDs bucket = do
     return $ mapMaybe parseUUID uuids
 
 getRequestBody :: ByteString -> ByteString -> IO Value
-getRequestBody bucket uuid = do
-    let url = messageUrl bucket uuid
-    response <- getAuth defaults url
-    let bodyAsString = getBody response
-    let attemptedDecode = (decode . BL.fromStrict . encodeUtf8) bodyAsString :: Maybe Value
-    return $ fromMaybe emptyObject attemptedDecode
+getRequestBody bucket uuid = ourDecode <$> getAuth defaults url
+    where
+        url = messageUrl bucket uuid
+        ourDecode = fromMaybe emptyObject . decode . BL.fromStrict . encodeUtf8 . getBody
 
 -- Handling API responses
 handleResponse :: Map ByteString Int -> Value -> IO (Map ByteString Int)
-handleResponse counts v = do
-    let eventType = encodeUtf8 $ getEventType v
-    let count = modify $ lookup eventType counts
-    let file = filename eventType count
+handleResponse counts v = newCounts <$ do
     putStrLn $ "Writing " ++ file
     writeFile file $ (BL.unpack . encode) v
-    let newCounts = alter (Just . modify) eventType counts
-    return newCounts
     where
-        modify a = fromMaybe 0 a + 1
+        eventType = encodeUtf8 $ getEventType v
+        count = modify $ lookup eventType counts
+        file = filename eventType count
+        newCounts = alter (Just . modify) eventType counts
+        modify = maybe 1 (+1)
 
 handleUUID :: ByteString -> Map ByteString Int -> ByteString -> IO (Map ByteString Int)
-handleUUID bucket counts uuid = do
-    details <- getRequestBody bucket uuid
-    handleResponse counts details
-
+handleUUID bucket counts uuid = handleResponse counts =<< getRequestBody bucket uuid
 
 handleBucket :: ByteString -> IO ()
 handleBucket bucket = do
@@ -117,6 +110,5 @@ handleBucket bucket = do
 main :: IO ()
 main = do
     putStrLn "Start..."
-    buckets <- bucketKeys
-    mapM_ handleBucket buckets
+    mapM_ handleBucket =<< bucketKeys
     putStrLn "Done"
