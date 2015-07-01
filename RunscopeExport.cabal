@@ -26,6 +26,7 @@ executable RunscopeExport
     bytestring,
     base-prelude,
     aeson,
+    monad-parallel,
     lens-aeson,
     mtl,
     text,

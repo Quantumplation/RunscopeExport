@@ -3,13 +3,16 @@
 
 module Main(main) where
 
-import           BasePrelude                (IO, Int, String, appendFile,
-                                             filter, fmap, foldM, foldM_, head,
-                                             length, map, mapM, mapM_,
-                                             otherwise, putStrLn, return, show,
-                                             take, undefined, ($), (+), (++),
-                                             (.), (=<<))
+import           BasePrelude                (Either, IO, Int, String,
+                                             appendFile, filter, fmap, foldM,
+                                             foldM_, head, length, map, mapM,
+                                             mapM_, otherwise, putStrLn, return,
+                                             show, take, undefined, ($), (+),
+                                             (++), (.), (=<<))
+import           Control.Concurrent         (forkIO)
+import           Control.Concurrent.Chan
 import           Control.Lens
+import qualified Control.Monad.Parallel     as MP
 import           Data.Aeson
 import           Data.Aeson.Lens            (key, values, _String, _Value)
 import           Data.Aeson.Types           hiding (Options)
@@ -17,7 +20,7 @@ import           Data.ByteString.Char8      (ByteString, concat, lines, pack,
                                              readFile, unpack)
 import qualified Data.ByteString.Lazy.Char8 as BL
 import           Data.Functor               ((<$), (<$>))
-import           Data.Map                   (Map, alter, empty, lookup)
+import           Data.Map                   (Map, alter, empty, insert, lookup)
 import           Data.Maybe
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
@@ -52,7 +55,7 @@ messageUrl bucket uuid = concat [rootUrl, bucket, "/messages/", uuid]
 filename :: ByteString -> Int -> String
 filename eventType count = folder ++ unpack eventType ++ show count ++ ".json"
 
--- Request helpers
+-- Helpers
 withToken :: ByteString -> Options -> Options
 withToken t o = o & header "Authorization" .~ [concat ["Bearer ", t]]
 
@@ -61,6 +64,12 @@ getAuth opts sess url = do
     token <- authToken
     S.getWith (withToken token opts) sess (unpack url)
 
+spawn :: (Chan a -> IO ()) -> IO (Chan a)
+spawn func = do
+    c <- newChan
+    forkIO $ func c
+    return c
+    
 -- Lenses and data conversion
 getData r = fromMaybe emptyArray $ r ^? responseBody . key "data" . _Value
 getBody r = fromMaybe "" $ getData r ^? key "request" . key "body" . _String
@@ -87,25 +96,38 @@ getRequestBody sess bucket uuid = ourDecode <$> getAuth defaults sess url
         ourDecode = fromMaybe emptyObject . decode . BL.fromStrict . encodeUtf8 . getBody
 
 -- Handling API responses
-handleResponse :: Map ByteString Int -> Value -> IO (Map ByteString Int)
-handleResponse counts v = newCounts <$ do
+handleCategory :: ByteString -> Int -> Chan Value -> IO ()
+handleCategory category count chan = do
+    nextVal <- readChan chan
     putStrLn $ "Writing " ++ file
-    BL.writeFile file $ encode v
+    BL.writeFile file $ encode nextVal
+    handleCategory category (count + 1) chan
     where
-        eventType = encodeUtf8 $ getEventType v
-        count = modify $ lookup eventType counts
-        file = filename eventType count
-        newCounts = alter (Just . modify) eventType counts
-        modify = maybe 1 (+1)
+        file = filename category count
 
-handleUUID :: S.Session -> ByteString -> Map ByteString Int -> ByteString -> IO (Map ByteString Int)
-handleUUID sess bucket counts uuid = handleResponse counts =<< getRequestBody sess bucket uuid
+handleResponse :: Map ByteString (Chan Value) -> Chan Value -> IO ()
+handleResponse categoryTable recvChan = do
+    nextResponse <- readChan recvChan
+    let eventType = encodeUtf8 $ getEventType nextResponse
+    (chan, newTable) <- case lookup eventType categoryTable of
+                Nothing -> do
+                    c <- spawn $ handleCategory eventType 1
+                    return (c, insert eventType c categoryTable)
+                Just c  -> return (c, categoryTable)
+    writeChan chan nextResponse
+    handleResponse newTable recvChan
+
+handleUUID :: S.Session -> ByteString -> Chan Value -> ByteString -> IO ()
+handleUUID sess bucket responseChan uuid =
+    writeChan responseChan =<< getRequestBody sess bucket uuid
 
 handleBucket :: S.Session -> ByteString -> IO ()
 handleBucket sess bucket = do
     uuids <- getUUIDs sess bucket
     putStrLn $ "Processing " ++ show (length uuids) ++ " uuids."
-    foldM_ (handleUUID sess bucket) empty uuids
+    responseChan <- spawn $ handleResponse empty
+    _ <- MP.mapM (handleUUID sess bucket responseChan) uuids
+    return ()
 
 -- Entrypoint
 main :: IO ()
